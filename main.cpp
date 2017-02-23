@@ -19,7 +19,8 @@ class BaseASTNode {
 public:
     string identifier;
     string optype;
-    vector<string> arguments;
+    string dec_type;
+    vector<BaseASTNode*> arguments;
     BaseASTNode *node = NULL;
 };
 
@@ -80,6 +81,78 @@ void split_string(std::string const &k, std::string const &delim, std::vector<st
         last_ptr = next_ptr + 1;
     }
     output.emplace_back(last_ptr);
+}
+
+BaseASTNode* make_ast_node(string s, bool insidefunction = false) {
+    size_t start = s.find("+/*=(");
+    if((start > 1) || (string("(+-").find(s[start]) != string::npos)|| (string("+-").find(s[start])) != string::npos) {
+        if(s[start] == '(' ) {
+            if((s.find('{') != string::npos) && !insidefunction) {
+                BaseASTNode *node;
+                vector<string> sr;
+                split_string(s," ",sr);
+                for(char i : sr[0]){
+                    if(!isalnum(i)){
+                        return 0;
+                    }
+                }
+                node->dec_type = sr[0];
+                node->identifier = sr[1].substr(0,sr[1].size() - (start + 1));
+                cout << node->identifier << endl;
+
+            } else {
+                string functionident = "";
+                for(size_t i = 0; i < start - 1; i++) {
+                    functionident += s[i];
+
+                }
+                if(!isalpha(functionident[0])) {
+                    return 0;
+                }
+                for(char i : functionident){
+                    if(!isalnum(i)){
+                        return 0;
+                    }
+                }
+                BaseASTNode *node = new BaseASTNode;
+                node->identifier = functionident;
+                node->optype = "call";
+                vector<BaseASTNode*> arguments;
+                vector<string> str;
+                split_string(s,",",str);
+                for(size_t i = 0; i < str.size();i++) {
+                    if(str[i].front() == ' '){
+                        str[i].erase(0);
+                    }
+                    if(str[i].back() == ' '){
+                        str[i].erase(str.size() - 1);
+                    }
+                }
+                for(string arg : str) {
+                    BaseASTNode *argnode = NULL;
+                    argnode = make_ast_node(arg, true);
+                    if(!argnode) {
+                        return 0;
+                    }
+                    arguments.push_back(argnode);
+                }
+                node->arguments = arguments;
+                return node;
+
+
+            }
+        } else if(s[start] == '=') {
+
+        }
+    } else if(insidefunction) {
+        BaseASTNode *node = new BaseASTNode;
+        node->identifier = s;
+        node->optype = "value";
+        return node;
+    } else if(start < 1) {
+        return 0;
+    }
+
 }
 
 int process_file(string filename) {
@@ -156,6 +229,17 @@ int process_file(string filename) {
         } else if(k == '#') {
             cout << "This is a comment." << endl;
         } else {
+            BaseASTNode *node = make_ast_node(line);
+            if(!node) {
+                return -1;
+            }
+            AST.AddNode(node);
+            if(typeid(node) == typeid(ASTFunctionNode)) {
+
+            } else {
+
+            }
+            /*
             vector<string> ppline;
             string delim = " ";
             split_string(line,delim,ppline);
@@ -171,6 +255,9 @@ int process_file(string filename) {
                             functionident += s[i];
 
                         }
+                        if(!isalpha(functionident[0])) {
+                            return -1;
+                        }
                         for(char i : functionident){
                             if(!isalnum(i)){
                                 return -1;
@@ -179,14 +266,18 @@ int process_file(string filename) {
                         BaseASTNode *node = new BaseASTNode;
                         node->identifier = functionident;
                         node->optype = "call";
-                        node->arguments;
+                        BaseASTNode *argnode = new BaseASTNode;
+                        while(true) {
+
+                        }
+
                     }
                 } else if(s[start] = '=') {
 
                 }
             } else {
                 return -1;
-            }
+            }*/
 
         }
     }
