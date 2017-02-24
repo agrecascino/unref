@@ -86,6 +86,7 @@ void split_string(std::string const &k, std::string const &delim, std::vector<st
 BaseASTNode* make_ast_node(string s, bool insidefunction = false) {
     size_t start = s.find("+/*=(");
     if((start > 1) || (string("(+-").find(s[start]) != string::npos)|| (string("+-").find(s[start])) != string::npos) {
+        cout << s[start] << endl;
         if(s[start] == '(' ) {
             if((s.find('{') != string::npos) && !insidefunction) {
                 BaseASTNode *node;
@@ -183,6 +184,9 @@ int process_file(string filename) {
             continue;
         }
         if(s1 == '\n') {
+            if(line.size() == 0) {
+                continue;
+            }
             lines.push_back(line);
             line = "";
             continue;
