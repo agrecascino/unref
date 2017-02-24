@@ -17,14 +17,20 @@ class FunctionManager {
 
 class BaseASTNode {
 public:
+    bool unref = false;
     string identifier;
     string optype;
     string dec_type;
     vector<BaseASTNode*> arguments;
     BaseASTNode *node = NULL;
 };
+class ASTRefNode : public BaseASTNode{
+public:
+    string modifier;
 
-class ASTFunctionNode : BaseASTNode{
+};
+
+class ASTFunctionNode : public BaseASTNode{
     public:
     BaseASTNode function_nodes;
 
@@ -84,12 +90,19 @@ void split_string(std::string const &k, std::string const &delim, std::vector<st
 }
 
 BaseASTNode* make_ast_node(string s, bool insidefunction = false) {
-    size_t start = s.find("+/*=(");
+    string find_these = "+/*=-(";
+    long start  = -1;
+    for(char i : find_these) {
+        if(s.find(i) != string::npos) {
+            start = s.find(i);
+            break;
+        }
+    }
     if((start > 1) || (string("(+-").find(s[start]) != string::npos)|| (string("+-").find(s[start])) != string::npos) {
         cout << s[start] << endl;
         if(s[start] == '(' ) {
             if((s.find('{') != string::npos) && !insidefunction) {
-                BaseASTNode *node;
+                ASTFunctionNode *node = new ASTFunctionNode;
                 vector<string> sr;
                 split_string(s," ",sr);
                 for(char i : sr[0]){
@@ -98,8 +111,9 @@ BaseASTNode* make_ast_node(string s, bool insidefunction = false) {
                     }
                 }
                 node->dec_type = sr[0];
-                node->identifier = sr[1].substr(0,sr[1].size() - (start + 1));
+                node->identifier = sr[1].substr(0,s.find("(") != string::npos ? sr[1].find("(") : sr[1].size() );
                 cout << node->identifier << endl;
+
 
             } else {
                 string functionident = "";
@@ -150,9 +164,29 @@ BaseASTNode* make_ast_node(string s, bool insidefunction = false) {
         node->identifier = s;
         node->optype = "value";
         return node;
-    } else if(start < 1) {
+    } else if(start == -1) {
+        size_t end_of_definition = 0;
+        if(insidefunction) {
+            end_of_definition = s.size() - 1;
+        }
+        end_of_definition = s.find(";");
+        vector<string> parse_this;
+        split_string(parse_this," ",s.substr(0,end_of_definition) + 1);
+        if(parse_this.size() >= 2) {
+            if(parse_this.size() == 3) {
+                string modifier = parse_this[0];
+                string type = parse_this[1];
+                string identifier = parse_this[2];
+                ASTRefNode *variable = NULL;
+                if(modifier == "const") {
+
+                }
+
+            }
+        }
         return 0;
     }
+    return 0;
 
 }
 
@@ -239,7 +273,7 @@ int process_file(string filename) {
             }
             AST.AddNode(node);
             if(typeid(node) == typeid(ASTFunctionNode)) {
-
+                cout << "yes" << endl;
             } else {
 
             }
