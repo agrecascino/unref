@@ -5,6 +5,10 @@
 #include <string.h>
 #include <algorithm>
 #include <typeinfo>
+#include <fstream>
+#include <memory>
+#include <llvm/ADT/STLExtras.h>
+
 using namespace std;
 
 class ReferenceManager {
@@ -14,69 +18,103 @@ class ReferenceManager {
 class FunctionManager {
 
 };
+enum TokenNumber {
+    tok_file_end = -1,
+    tok_keyword = -2,
+    tok_value = -3,
+    tok_word = -4
 
-class BaseASTNode {
+};
+
+struct Token {
+    int tokenid;
+    std::string str;
+};
+
+class TypeDeclaration {
+    std::string type;
+    bool unref;
+    bool constant;
+    bool ptr;
 public:
-    bool unref = false;
-    string identifier;
-    string optype;
-    string dec_type;
-    vector<BaseASTNode*> arguments;
-    BaseASTNode *node = NULL;
+    TypeDeclaration(const std::string &type,
+                    const bool &unref, const bool &constant, const bool &ptr)
+        : type(type), unref(unref), constant(constant), ptr(ptr) {}
+
 };
-class ASTRefNode : public BaseASTNode{
+
+class ExprAST {
 public:
-    string modifier;
-
+    virtual ~ExprAST() {}
 };
 
-class ASTFunctionNode : public BaseASTNode{
-    public:
-    BaseASTNode function_nodes;
-
+class NumberExprAST : public ExprAST {
+    void* val;
+    std::unique_ptr<TypeDeclaration> decl;
+public:
+    NumberExprAST(void* val, std::unique_ptr<TypeDeclaration> decl) : val(val), decl(decl) {}
 };
 
-class ASTTree {
-    public:
-    ASTTree() {
-
-    }
-
-    ASTTree(BaseASTNode &noderef) {
-        initial = &noderef;
-    }
-    void AddNode(BaseASTNode *node){
-        BaseASTNode *currentnode = initial;
-        while(true) {
-            if(!currentnode->node){
-                currentnode->node = node;
-                break;
-            }
-        }
-    }
-    BaseASTNode* FindNode(string identifier, size_t start){
-        BaseASTNode *currentnode = initial;
-        size_t i = 0;
-        while(true) {
-            if(!currentnode->node){
-                return NULL;
-            }
-            if((currentnode->identifier == identifier) && i >= start) {
-                return currentnode;
-            }
-            i++;
-        }
-
-    }
-
-    BaseASTNode* GetInitialNode(){
-        return initial;
-    }
-
-    private:
-    BaseASTNode *initial;
+class VariableExprAST : public ExprAST {
+    std::string name;
+    std::unique_ptr<TypeDeclaration> decl;
+public:
+    VariableExprAST(const std::string &name,
+                    const std::unique_ptr<TypeDeclaration> &decl)
+        : name(name), decl(decl)  {}
 };
-ASTTree AST;
+
+class BinaryExprAST : public ExprAST {
+    std::string op;
+    std::unique_ptr<ExprAST> LHS, RHS;
+public:
+    BinaryExprAST(string op, std::unique_ptr<ExprAST> LHS,
+                  std::unique_ptr<ExprAST> RHS)
+        : op(op), LHS(std::move(LHS)), RHS(std::move(RHS)) {}
+};
+
+class CallExprAST : public ExprAST {
+    std::string callee;
+    std::vector<std::unique_ptr<ExprAST>> args;
+public:
+    CallExprAST(const std::string &callee,
+                std::vector<std::unique_ptr<ExprAST>> args)
+        : callee(callee), args(std::move(args)) {}
+};
+
+class StructPrototypeAST {
+    std::string name;
+    vector<std::unique_ptr<TypeDeclaration>> decl;
+public:
+    StructPrototypeAST(const std::string &name,
+                       std::vector<std::unique_ptr<TypeDeclaration>> decl)
+        : name(name), decl(decl) {}
+};
+
+class PrototypeAST {
+    std::string name;
+    std::vector<std::unique_ptr<VariableExprAST>> args;
+    TypeDeclaration decl;
+public:
+    PrototypeAST(const std::string &name,
+                 std::vector<std::unique_ptr<VariableExprAST>> args,
+                 const TypeDeclaration &decl)
+        : name(name), args(std::move(args)) , decl(std::move(decl)) {}
+
+        const std::string &getName() const { return name; }
+
+        const TypeDeclaration &getDecl() const { return decl; }
+};
+
+class FunctionAST {
+    std::unique_ptr<PrototypeAST> proto;
+    std::unique_ptr<ExprAST> body;
+public:
+    FunctionAST(std::unique_ptr<PrototypeAST> proto,
+                std::unique_ptr<ExprAST> body)
+        : proto(std::move(proto)), body(std::move(body)) {}
+};
+
 void split_string(std::string const &k, std::string const &delim, std::vector<std::string> &output)
 {
     // Due to the use of strpbrk here, this will stop copying at a null char. This is in fact desirable.
@@ -89,234 +127,161 @@ void split_string(std::string const &k, std::string const &delim, std::vector<st
     output.emplace_back(last_ptr);
 }
 
-BaseASTNode* make_ast_node(string s, bool insidefunction = false) {
-    string find_these = "+/*=-(";
-    long start  = -1;
-    for(char i : find_these) {
-        if(s.find(i) != string::npos) {
-            start = s.find(i);
+class Tokenizer {
+public:
+    Tokenizer(string filename) {
+        f = fstream(filename, std::fstream::in);
+    }
+    Token getToken() {
+        Token token;
+        while(isspace(lastchar)){
+            lastchar = f.get();
+        }
+        if(isalpha(lastchar)) {
+            token.str = lastchar;
+            while(isalnum(lastchar = f.get())) {
+                token.str += lastchar;
+            }
+            if(iskeyword(token.str)) {
+                token.tokenid = tok_keyword;
+                return token;
+            }
+            token.tokenid = tok_word;
+            return token;
+        }
+        if(isdigit(lastchar) || lastchar == '.') {
+            do {
+                token.str += lastchar;
+                lastchar = f.get();
+            } while(isdigit(lastchar) || lastchar == '.');
+            token.tokenid = tok_value;
+            return token;
+        }
+        if(lastchar == '#') {
+            do
+                lastchar = f.get();
+            while(f.get() != EOF && lastchar != '\n' && lastchar != '\r');
+            if(lastchar != EOF)
+                return getToken();
+
+        }
+        if(lastchar == EOF) {
+            token.tokenid = tok_file_end;
+            return token;
+        }
+        int thischar = lastchar;
+        lastchar = f.get();
+        token.tokenid = thischar;
+        return token;
+    }
+
+private:
+    int iskeyword(string s) {
+        for(string i : keyword_list) {
+            if(s == i) {
+                return true;
+            }
+        }
+        return false;
+    }
+    string keyword_list[17] = {"unref","deref","ptr","const","string","implicit","if","int64","int32","int16","int8","uint64","uint32","uint16","uint8","float32","float64"};
+    int lastchar  = ' ';
+    fstream f;
+};
+
+class Parser {
+    Parser(Tokenizer tokenizer) : tokenizer(std::move(tokenizer)) {
+
+    }
+
+private:
+    Tokenizer tokenizer;
+    Token current_token;
+    Token getNextToken() {
+        return current_token = tokenizer.getToken();
+    }
+    std::unique_ptr<ExprAST> ParseNumberExpr(void* numval, TypeDeclaration decl) {
+        auto result = llvm::make_unique<NumberExprAST>(numval,decl);
+        getNextToken();
+        return std::move(result);
+    }
+
+    std::unique_ptr<ExprAST> ParseParenExpr() {
+        getNextToken();
+        auto v = ParseExpression();
+        if(!v)
+            return nullptr;
+
+        if(current_token != ')')
+            return LogError("expected ')'");
+        getNextToken();
+        return v;
+    }
+
+    std::unique_ptr<ExprAST> ParseIdentifierExpr() {
+        std::string identifier = current_token.str;
+
+        getNextToken();
+
+        if(current_token.tokenid != '(')
+            return llvm::make_unique<VariableExprAST>(identifier);
+
+        getNextToken();
+        std::vector<std::unique_ptr<ExprAST>> args;
+        if(current_token.tokenid != ')') {
+            while (1) {
+                if(auto arg = ParseExpression())
+                    args.push_back(std::move(arg));
+                else
+                    return nullptr;
+
+                if(current_token.tokenid == ')')
+                    break;
+
+                if(current_token.tokenid != ',')
+                    return LogError("Expected ')' or ', in argument list");
+                getNextToken();
+            }
+        }
+
+        getNextToken();
+
+        return llvm::make_unique<CallExprAST(identifier,std::move(args));
+    }
+
+    std::unique_ptr<ExprAST> ParsePrimary() {
+        switch(current_token.tokenid) {
+        default:
+            return LogError("unknown token when expected an expression");
+        case tok_word:
             break;
         }
     }
-    if((start > 1) || (string("(+-").find(s[start]) != string::npos)|| (string("+-").find(s[start])) != string::npos) {
-        cout << s[start] << endl;
-        if(s[start] == '(' ) {
-            if((s.find('{') != string::npos) && !insidefunction) {
-                ASTFunctionNode *node = new ASTFunctionNode;
-                vector<string> sr;
-                split_string(s," ",sr);
-                for(char i : sr[0]){
-                    if(!isalnum(i)){
-                        return 0;
-                    }
-                }
-                node->dec_type = sr[0];
-                node->identifier = sr[1].substr(0,s.find("(") != string::npos ? sr[1].find("(") : sr[1].size() );
-                cout << node->identifier << endl;
 
-
-            } else {
-                string functionident = "";
-                for(size_t i = 0; i < start - 1; i++) {
-                    functionident += s[i];
-
-                }
-                if(!isalpha(functionident[0])) {
-                    return 0;
-                }
-                for(char i : functionident){
-                    if(!isalnum(i)){
-                        return 0;
-                    }
-                }
-                BaseASTNode *node = new BaseASTNode;
-                node->identifier = functionident;
-                node->optype = "call";
-                vector<BaseASTNode*> arguments;
-                vector<string> str;
-                split_string(s,",",str);
-                for(size_t i = 0; i < str.size();i++) {
-                    if(str[i].front() == ' '){
-                        str[i].erase(0);
-                    }
-                    if(str[i].back() == ' '){
-                        str[i].erase(str.size() - 1);
-                    }
-                }
-                for(string arg : str) {
-                    BaseASTNode *argnode = NULL;
-                    argnode = make_ast_node(arg, true);
-                    if(!argnode) {
-                        return 0;
-                    }
-                    arguments.push_back(argnode);
-                }
-                node->arguments = arguments;
-                return node;
-
-
-            }
-        } else if(s[start] == '=') {
-
-        }
-    } else if(insidefunction) {
-        BaseASTNode *node = new BaseASTNode;
-        node->identifier = s;
-        node->optype = "value";
-        return node;
-    } else if(start == -1) {
-        size_t end_of_definition = 0;
-        if(insidefunction) {
-            end_of_definition = s.size() - 1;
-        }
-        end_of_definition = s.find(";");
-        vector<string> parse_this;
-        split_string(parse_this," ",s.substr(0,end_of_definition) + 1);
-        if(parse_this.size() >= 2) {
-            if(parse_this.size() == 3) {
-                string modifier = parse_this[0];
-                string type = parse_this[1];
-                string identifier = parse_this[2];
-                ASTRefNode *variable = NULL;
-                if(modifier == "const") {
-
-                }
-
-            }
-        }
-        return 0;
+    std::unique_ptr<ExprAST> LogError(const char *str) {
+        fprintf(stderr, "LogError: %s\n", str);
+        return nullptr;
     }
-    return 0;
 
-}
+    std::unique_ptr<PrototypeAST> LogErrorP(const char *str) {
+        LogError(str);
+        return nullptr;
+    }
+
+    int isstruct(string name) {
+
+    }
+};
 
 int process_file(string filename) {
     cout << "Loading: " << filename << endl;
-    std::vector<char> assembly;
-    std::vector<std::string> lines;
-    FILE *asmfile;
-    asmfile = fopen(filename.c_str(),"r");
-    if(!asmfile) {
-        printf("The file needs to exist.\n");
-        exit(-1);
-    }
-    size_t file_size = 0;
-    fseek(asmfile,0L,SEEK_END);
-    file_size = ftell(asmfile);
-    rewind(asmfile);
-    for(size_t i = 0;i < file_size;i++) {
-        char *ptr = new char;
-        fread(ptr,1,1,asmfile);
-        assembly.push_back(*ptr);
-        delete ptr;
-
-    }
-    std::string line;
-    for(char s1 : assembly) {
-        if(s1 == '\t') {
-            line += " ";
-            continue;
-        }
-        if(s1 == '\n') {
-            if(line.size() == 0) {
-                continue;
-            }
-            lines.push_back(line);
-            line = "";
-            continue;
-        }
-        line += s1;
-    }
-    for(string &line : lines) {
-        std::string::iterator new_end =
-                std::unique(line.begin(), line.end(),
-                [=](char lhs, char rhs){ return (lhs == rhs) && (lhs == ' '); }
-                );
-        line.erase(new_end, line.end());
-        char k = 0;
-        string oldline = line;
-        bool clipline = false;
-        line = "";
-        for(size_t i = 0; i < oldline.size();i++) {
-            string s =  "=*/+-^";
-            if((s.find(oldline[i]) != string::npos) && (i != 0) && (oldline[i-1] != ' ') && (s.find(oldline[i-1]) == string::npos)) {
-                oldline.insert(oldline.begin() + i,' ');
-            } else if((s.find(oldline[i]) != string::npos) && (i != oldline.size() - 1) && (oldline[i+1] != ' ') && (s.find(oldline[i+1]) == string::npos)) {
-                oldline.insert(oldline.begin() + (i+1), ' ');
-            }
-            if((oldline[i] != ' ') && !clipline) {
-                k = oldline[i];
-                line += oldline[i];
-                clipline = true;
-
-            } else if(clipline){
-                line += oldline[i];
-            }
-
-        }
-        cout << line << endl;
-        if(k == '@') {
-            cout << "This is a preprocessor line." << endl;
-            line.erase(std::remove(line.begin(), line.end(), '@'), line.end());
-            vector<string> ppline;
-            string delim = " ";
-            split_string(line,delim,ppline);
-            if(ppline[0] == "load") {
-                process_file(ppline[1] + ".unref");
-            }
-        } else if(k == '#') {
-            cout << "This is a comment." << endl;
-        } else {
-            BaseASTNode *node = make_ast_node(line);
-            if(!node) {
-                return -1;
-            }
-            AST.AddNode(node);
-            if(typeid(node) == typeid(ASTFunctionNode)) {
-                cout << "yes" << endl;
-            } else {
-
-            }
-            /*
-            vector<string> ppline;
-            string delim = " ";
-            split_string(line,delim,ppline);
-            string s = line;
-            size_t start = s.find("+/*=(");
-            if((start > 1) || (string("+-").find(s[start])) != string::npos) {
-                if(s[start] == '(') {
-                    if(s.find('{') != string::npos) {
-
-                    } else {
-                        string functionident = "";
-                        for(size_t i = 0; i < start - 1; i++) {
-                            functionident += s[i];
-
-                        }
-                        if(!isalpha(functionident[0])) {
-                            return -1;
-                        }
-                        for(char i : functionident){
-                            if(!isalnum(i)){
-                                return -1;
-                            }
-                        }
-                        BaseASTNode *node = new BaseASTNode;
-                        node->identifier = functionident;
-                        node->optype = "call";
-                        BaseASTNode *argnode = new BaseASTNode;
-                        while(true) {
-
-                        }
-
-                    }
-                } else if(s[start] = '=') {
-
-                }
-            } else {
-                return -1;
-            }*/
-
+    Tokenizer t(filename);
+    while(true) {
+        Token token = t.getToken();
+        cout << token.str << endl;
+        cout << token.tokenid << endl;
+        if(token.tokenid == tok_file_end) {
+            break;
         }
     }
     return 0;
@@ -328,15 +293,7 @@ int main(int argc, char *argv[])
         printf("You need to specify a file.\n");
         exit(-1);
     }
-    BaseASTNode *initial = new BaseASTNode;
-        initial->identifier = "start";
-        AST = ASTTree(*initial);
     process_file("test.unref");
-    BaseASTNode *node = AST.GetInitialNode();
-    while(true){
-        cout << node->identifier << endl;
-        node = node->node;
-    }
     return 0;
 }
 
