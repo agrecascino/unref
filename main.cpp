@@ -7,6 +7,7 @@
 #include <typeinfo>
 #include <fstream>
 #include <memory>
+#include <map>
 #include <llvm/ADT/STLExtras.h>
 
 using namespace std;
@@ -31,37 +32,40 @@ struct Token {
     std::string str;
 };
 
-class TypeDeclaration {
-    std::string type;
-    bool unref;
-    bool constant;
-    bool ptr;
-public:
-    TypeDeclaration(const std::string &type,
-                    const bool &unref, const bool &constant, const bool &ptr)
-        : type(type), unref(unref), constant(constant), ptr(ptr) {}
-
-};
-
 class ExprAST {
 public:
     virtual ~ExprAST() {}
 };
 
+class TypeDeclarationAST{
+    std::string type;
+    bool unref;
+    bool constant;
+    bool ptr;
+public:
+    TypeDeclarationAST(const std::string &type,
+                    const bool &unref, const bool &constant, const bool &ptr)
+        : type(type), unref(unref), constant(constant), ptr(ptr) {}
+
+    const std::string &getType() const { return type; }
+
+};
+
+
 class NumberExprAST : public ExprAST {
     void* val;
-    std::unique_ptr<TypeDeclaration> decl;
+    std::unique_ptr<TypeDeclarationAST> decl;
 public:
-    NumberExprAST(void* val, std::unique_ptr<TypeDeclaration> decl) : val(val), decl(decl) {}
+    NumberExprAST(void* val, std::unique_ptr<TypeDeclarationAST> decl) : val(val), decl(std::move(decl)) {}
 };
 
 class VariableExprAST : public ExprAST {
     std::string name;
-    std::unique_ptr<TypeDeclaration> decl;
+    std::unique_ptr<TypeDeclarationAST> decl;
 public:
     VariableExprAST(const std::string &name,
-                    const std::unique_ptr<TypeDeclaration> &decl)
-        : name(name), decl(decl)  {}
+                    std::unique_ptr<TypeDeclarationAST> decl)
+        : name(name), decl(std::move(decl))  {}
 };
 
 class BinaryExprAST : public ExprAST {
@@ -82,28 +86,30 @@ public:
         : callee(callee), args(std::move(args)) {}
 };
 
-class StructPrototypeAST {
+class StructPrototypeAST : public ExprAST {
     std::string name;
-    vector<std::unique_ptr<TypeDeclaration>> decl;
+    std::vector<std::unique_ptr<VariableExprAST>> decl;
 public:
     StructPrototypeAST(const std::string &name,
-                       std::vector<std::unique_ptr<TypeDeclaration>> decl)
-        : name(name), decl(decl) {}
+                       std::vector<std::unique_ptr<VariableExprAST>> decl)
+        : name(name), decl(std::move(decl)) {}
+
+    const std::string &getName() const { return name; }
 };
 
 class PrototypeAST {
     std::string name;
     std::vector<std::unique_ptr<VariableExprAST>> args;
-    TypeDeclaration decl;
+    std::unique_ptr<TypeDeclarationAST> decl;
 public:
     PrototypeAST(const std::string &name,
                  std::vector<std::unique_ptr<VariableExprAST>> args,
-                 const TypeDeclaration &decl)
+                 std::unique_ptr<TypeDeclarationAST> decl)
         : name(name), args(std::move(args)) , decl(std::move(decl)) {}
 
         const std::string &getName() const { return name; }
 
-        const TypeDeclaration &getDecl() const { return decl; }
+        const TypeDeclarationAST &getDecl() const { return *decl; }
 };
 
 class FunctionAST {
@@ -184,24 +190,30 @@ private:
         }
         return false;
     }
-    string keyword_list[17] = {"unref","deref","ptr","const","string","implicit","if","int64","int32","int16","int8","uint64","uint32","uint16","uint8","float32","float64"};
+    string keyword_list[17] = {"unref","deref","ptr","const","string","implicit","int64","int32","int16","int8","uint64","uint32","uint16","uint8","float32","float64"};
     int lastchar  = ' ';
     fstream f;
 };
 
 class Parser {
+    friend class Tokenizer;
     Parser(Tokenizer tokenizer) : tokenizer(std::move(tokenizer)) {
-
+        BinopPrecedence['<'] = 10;
+        BinopPrecedence['+'] = 20;
+        BinopPrecedence['-'] = 20;
+        BinopPrecedence['*'] = 40;
     }
 
 private:
+    std::vector<StructPrototypeAST> types;
+    std::map<char, int> BinopPrecedence;
     Tokenizer tokenizer;
     Token current_token;
     Token getNextToken() {
         return current_token = tokenizer.getToken();
     }
-    std::unique_ptr<ExprAST> ParseNumberExpr(void* numval, TypeDeclaration decl) {
-        auto result = llvm::make_unique<NumberExprAST>(numval,decl);
+    std::unique_ptr<ExprAST> ParseNumberExpr(void* numval, std::unique_ptr<TypeDeclarationAST> decl) {
+        auto result = llvm::make_unique<NumberExprAST>(numval, std::move(decl));
         getNextToken();
         return std::move(result);
     }
@@ -212,7 +224,7 @@ private:
         if(!v)
             return nullptr;
 
-        if(current_token != ')')
+        if(current_token.tokenid != ')')
             return LogError("expected ')'");
         getNextToken();
         return v;
@@ -223,8 +235,10 @@ private:
 
         getNextToken();
 
-        if(current_token.tokenid != '(')
-            return llvm::make_unique<VariableExprAST>(identifier);
+        if(current_token.tokenid != '(') {
+            std::unique_ptr<TypeDeclarationAST> decl = ParseType();
+            return llvm::make_unique<VariableExprAST>(identifier, std::move(decl));
+        }
 
         getNextToken();
         std::vector<std::unique_ptr<ExprAST>> args;
@@ -246,7 +260,7 @@ private:
 
         getNextToken();
 
-        return llvm::make_unique<CallExprAST(identifier,std::move(args));
+        return llvm::make_unique<CallExprAST>(identifier,std::move(args));
     }
 
     std::unique_ptr<ExprAST> ParsePrimary() {
@@ -256,6 +270,100 @@ private:
         case tok_word:
             break;
         }
+    }
+
+    int GetTokPrecedence() {
+        if(!isascii(current_token.tokenid))
+            return -1;
+        int tok_prec = BinopPrecedence[current_token.tokenid];
+        if(tok_prec <= 0) return -1;
+        return tok_prec;
+    }
+
+    std::unique_ptr<ExprAST> ParseExpression() {
+        auto LHS = ParsePrimary();
+        if(!LHS)
+            return nullptr;
+
+        return ParseBinOpRHS(0,std::move(LHS));
+    }
+
+    std::unique_ptr<ExprAST> ParseBinOpRHS(int expr_prec, std::unique_ptr<ExprAST> LHS) {
+        while(1) {
+            int tok_prec = GetTokPrecedence();
+
+            if(tok_prec < expr_prec)
+                return LHS;
+
+            int bin_op = current_token.tokenid;
+            getNextToken();
+
+            auto RHS = ParsePrimary();
+            if(!RHS)
+                return nullptr;
+
+            int next_prec = GetTokPrecedence();
+            if(tok_prec < next_prec) {
+                RHS = ParseBinOpRHS(tok_prec + 1,std::move(RHS));
+                if(!RHS)
+                    return nullptr;
+            }
+
+            LHS = llvm::make_unique<BinaryExprAST>(to_string(bin_op), std::move(LHS), std::move(RHS));
+        }
+    }
+
+    std::unique_ptr<TypeDeclarationAST> ParseType() {
+        bool constant = false;
+        bool unref = false;
+        bool ptr = false;
+        std::string type;
+        while(1) {
+            if((current_token.tokenid == tok_keyword) || (isstruct(current_token.str))) {
+                if(current_token.str == "const") {
+                    constant = true;
+                } else if(current_token.str == "unref") {
+                    unref = true;
+                } else if(current_token.str == "ptr") {
+                    ptr = true;
+                } else if(current_token.str == "deref") {
+                    return LogErrorT("deref is not a typename");
+                } else {
+                    type = current_token.str;
+                }
+            } else {
+                break;
+            }
+            getNextToken();
+        }
+        return llvm::make_unique<TypeDeclarationAST>(type,unref,constant,ptr);
+    }
+
+    std::unique_ptr<PrototypeAST> ParsePrototype() {
+        std::unique_ptr<TypeDeclarationAST> decl = ParseType();
+        if(!decl)
+            return nullptr;
+        if(decl->getType().empty()) {
+            return LogErrorP("no typename specified");
+        }
+        if(current_token.tokenid != tok_word)
+            return LogErrorP("Expected function name in prototype");
+
+        std::string fn_name = current_token.str;
+        getNextToken();
+
+        if(current_token.tokenid == '(')
+            return LogErrorP("Expected '(' in prototype");
+
+        std::vector<VariableExprAST> ArgsPrototypes;
+        while((getNextToken().tokenid == tok_keyword) || isstruct(current_token.str)){
+            std::unique_ptr<TypeDeclarationAST> arg_decl =  ParseType();
+            string name = current_token.str;
+            ArgsPrototypes.push_back(VariableExprAST(name,std::move(arg_decl)));
+        }
+
+
+
     }
 
     std::unique_ptr<ExprAST> LogError(const char *str) {
@@ -268,8 +376,19 @@ private:
         return nullptr;
     }
 
-    int isstruct(string name) {
+    std::unique_ptr<TypeDeclarationAST> LogErrorT(const char *str) {
+        LogError(str);
+        return nullptr;
+    }
 
+
+    int isstruct(string name) {
+        for(StructPrototypeAST st : types) {
+            if(st.getName() == name) {
+                return true;
+            }
+        }
+        return false;
     }
 };
 
