@@ -44,7 +44,7 @@ class TypeDeclarationAST{
     bool ptr;
 public:
     TypeDeclarationAST(const std::string &type,
-                    const bool &unref, const bool &constant, const bool &ptr)
+                       const bool &unref, const bool &constant, const bool &ptr)
         : type(type), unref(unref), constant(constant), ptr(ptr) {}
 
     const std::string &getType() const { return type; }
@@ -88,10 +88,10 @@ public:
 
 class StructPrototypeAST : public ExprAST {
     std::string name;
-    std::vector<std::unique_ptr<VariableExprAST>> decl;
+    std::vector<std::unique_ptr<ExprAST>> decl;
 public:
     StructPrototypeAST(const std::string &name,
-                       std::vector<std::unique_ptr<VariableExprAST>> decl)
+                       std::vector<std::unique_ptr<ExprAST>> decl)
         : name(name), decl(std::move(decl)) {}
 
     const std::string &getName() const { return name; }
@@ -107,9 +107,9 @@ public:
                  std::unique_ptr<TypeDeclarationAST> decl)
         : name(name), args(std::move(args)) , decl(std::move(decl)) {}
 
-        const std::string &getName() const { return name; }
+    const std::string &getName() const { return name; }
 
-        const TypeDeclarationAST &getDecl() const { return *decl; }
+    const TypeDeclarationAST &getDecl() const { return *decl; }
 };
 
 class FunctionAST {
@@ -209,11 +209,13 @@ private:
     std::map<char, int> BinopPrecedence;
     Tokenizer tokenizer;
     Token current_token;
+    void* number_value;
     Token getNextToken() {
         return current_token = tokenizer.getToken();
     }
-    std::unique_ptr<ExprAST> ParseNumberExpr(void* numval, std::unique_ptr<TypeDeclarationAST> decl) {
-        auto result = llvm::make_unique<NumberExprAST>(numval, std::move(decl));
+    std::unique_ptr<ExprAST> ParseNumberExpr() {
+        std::unique_ptr<TypeDeclarationAST> decl = InferValueTokenType();
+        auto result = llvm::make_unique<NumberExprAST>(number_value, std::move(decl));
         getNextToken();
         return std::move(result);
     }
@@ -268,7 +270,11 @@ private:
         default:
             return LogError("unknown token when expected an expression");
         case tok_word:
-            break;
+            return ParseIdentifierExpr();
+        case tok_value:
+            return ParseNumberExpr();
+        case '(':
+            return ParseParenExpr();
         }
     }
 
@@ -310,6 +316,41 @@ private:
             }
 
             LHS = llvm::make_unique<BinaryExprAST>(to_string(bin_op), std::move(LHS), std::move(RHS));
+        }
+    }
+
+    std::unique_ptr<FunctionAST> ParseDefinition() {
+        getNextToken();
+        auto Proto = ParsePrototype();
+        if(!Proto) return nullptr;
+
+        if(current_token.tokenid != '{') {
+            return nullptr;
+        }
+
+        if(auto E = ParseExpression())
+            return llvm::make_unique<FunctionAST>(std::move(Proto), std::move(E));
+        return nullptr;
+    }
+
+    std::unique_ptr<TypeDeclarationAST> InferValueTokenType() {
+        if(current_token.tokenid != tok_value) {
+            return nullptr;
+        }
+        if(current_token.str.find('.') != string::npos) {
+            number_value = new float;
+            *(float*)number_value = strtof(current_token.str.c_str(),NULL);
+            return llvm::make_unique<TypeDeclarationAST>("float32",true,false,false);
+        } else {
+            if(current_token.str.find('-') != string::npos) {
+                number_value = new int;
+                *(int*)number_value = stoi(current_token.str);
+                return llvm::make_unique<TypeDeclarationAST>("int32",true,false,false);
+            } else {
+                number_value = new unsigned int;
+                *(unsigned int*)number_value = stoi(current_token.str);
+                return llvm::make_unique<TypeDeclarationAST>("uint32",true,false,false);
+            }
         }
     }
 
@@ -355,14 +396,17 @@ private:
         if(current_token.tokenid == '(')
             return LogErrorP("Expected '(' in prototype");
 
-        std::vector<VariableExprAST> ArgsPrototypes;
+        std::vector<std::unique_ptr<VariableExprAST>> ArgsPrototypes;
         while((getNextToken().tokenid == tok_keyword) || isstruct(current_token.str)){
             std::unique_ptr<TypeDeclarationAST> arg_decl =  ParseType();
             string name = current_token.str;
-            ArgsPrototypes.push_back(VariableExprAST(name,std::move(arg_decl)));
+            ArgsPrototypes.push_back(llvm::make_unique<VariableExprAST>(name,std::move(arg_decl)));
         }
 
-
+        if(current_token.tokenid != ')')
+            return LogErrorP("Expected ') in prototype");
+        getNextToken();
+        return llvm::make_unique<PrototypeAST>(fn_name, std::move(ArgsPrototypes), std::move(decl));
 
     }
 
@@ -383,7 +427,7 @@ private:
 
 
     int isstruct(string name) {
-        for(StructPrototypeAST st : types) {
+        for(StructPrototypeAST &st : types) {
             if(st.getName() == name) {
                 return true;
             }
