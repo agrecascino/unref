@@ -23,7 +23,8 @@ enum TokenNumber {
     tok_file_end = -1,
     tok_keyword = -2,
     tok_value = -3,
-    tok_word = -4
+    tok_word = -4,
+    tok_struct = -5
 
 };
 
@@ -114,10 +115,10 @@ public:
 
 class FunctionAST {
     std::unique_ptr<PrototypeAST> proto;
-    std::unique_ptr<ExprAST> body;
+    vector<std::unique_ptr<ExprAST>> body;
 public:
     FunctionAST(std::unique_ptr<PrototypeAST> proto,
-                std::unique_ptr<ExprAST> body)
+                vector<std::unique_ptr<ExprAST>> body)
         : proto(std::move(proto)), body(std::move(body)) {}
 };
 
@@ -145,8 +146,12 @@ public:
         }
         if(isalpha(lastchar)) {
             token.str = lastchar;
-            while(isalnum(lastchar = f.get())) {
+            while(isalnum(lastchar = f.get()) || lastchar == '_') {
                 token.str += lastchar;
+            }
+            if(token.str == "struct") {
+                token.tokenid = tok_struct;
+                return token;
             }
             if(iskeyword(token.str)) {
                 token.tokenid = tok_keyword;
@@ -190,28 +195,57 @@ private:
         }
         return false;
     }
-    string keyword_list[17] = {"unref","deref","ptr","const","string","implicit","int64","int32","int16","int8","uint64","uint32","uint16","uint8","float32","float64"};
+    string keyword_list[18] = {"unref","deref","ptr","const","string","implicit","int64","int32","int16","int8","uint64","uint32","uint16","uint8","float32","float64","none"};
     int lastchar  = ' ';
     fstream f;
 };
 
 class Parser {
     friend class Tokenizer;
+public:
     Parser(Tokenizer tokenizer) : tokenizer(std::move(tokenizer)) {
         BinopPrecedence['<'] = 10;
         BinopPrecedence['+'] = 20;
         BinopPrecedence['-'] = 20;
         BinopPrecedence['*'] = 40;
+        getNextToken();
+    }
+
+    void MainLoop() {
+        while(1) {
+            switch(current_token.tokenid) {
+                case tok_file_end:
+                    return;
+                case ';':
+                    getNextToken();
+                    break;
+                case tok_keyword:
+                    if(ParseDefinition() == nullptr) {
+                        ParseIdentifierExpr();
+                    }
+                    break;
+                default:
+                    cout << current_token.tokenid << endl;
+                    cout << current_token.str << endl;
+                    cout << "Expressions not allowed at top level" << endl;
+                    return;
+            }
+        }
     }
 
 private:
     std::vector<StructPrototypeAST> types;
     std::map<char, int> BinopPrecedence;
     Tokenizer tokenizer;
-    Token current_token;
+    Token current_token; 
+    int second_pass = 0;
     void* number_value;
     Token getNextToken() {
-        return current_token = tokenizer.getToken();
+        current_token = tokenizer.getToken();
+        cout << current_token.str << endl;
+        cout << (char)current_token.tokenid << endl;
+        cout << current_token.tokenid << endl;
+        return current_token;
     }
     std::unique_ptr<ExprAST> ParseNumberExpr() {
         std::unique_ptr<TypeDeclarationAST> decl = InferValueTokenType();
@@ -233,15 +267,21 @@ private:
     }
 
     std::unique_ptr<ExprAST> ParseIdentifierExpr() {
-        std::string identifier = current_token.str;
 
-        getNextToken();
-
-        if(current_token.tokenid != '(') {
+        if((current_token.tokenid == tok_keyword) || isstruct(current_token.str)) {
             std::unique_ptr<TypeDeclarationAST> decl = ParseType();
-            return llvm::make_unique<VariableExprAST>(identifier, std::move(decl));
+            second_pass = true;
+            return llvm::make_unique<VariableExprAST>(current_token.str, std::move(decl));
+        } else if(current_token.tokenid == tok_word) {
+            std::unique_ptr<TypeDeclarationAST> raincheck = llvm::make_unique<TypeDeclarationAST>("unknown",false, false, false);
+            std::unique_ptr<VariableExprAST> LHS = llvm::make_unique<VariableExprAST>(current_token.str,std::move(raincheck));
+            getNextToken();
+            string op = current_token.str;
+            getNextToken();
+            std::unique_ptr<VariableExprAST> RHS = llvm::make_unique<VariableExprAST>(current_token.str,std::move(raincheck));
+            return llvm::make_unique<BinaryExprAST>(op, std::move(LHS), std::move(RHS));
         }
-
+        std::string identifier = current_token.str;
         getNextToken();
         std::vector<std::unique_ptr<ExprAST>> args;
         if(current_token.tokenid != ')') {
@@ -269,6 +309,8 @@ private:
         switch(current_token.tokenid) {
         default:
             return LogError("unknown token when expected an expression");
+        case tok_keyword:
+            return ParseIdentifierExpr();
         case tok_word:
             return ParseIdentifierExpr();
         case tok_value:
@@ -320,17 +362,25 @@ private:
     }
 
     std::unique_ptr<FunctionAST> ParseDefinition() {
-        getNextToken();
-        auto Proto = ParsePrototype();
-        if(!Proto) return nullptr;
+         cout << current_token.str << endl;
+        auto proto = ParsePrototype();
+        if(!proto) return nullptr;
 
         if(current_token.tokenid != '{') {
             return nullptr;
         }
-
-        if(auto E = ParseExpression())
-            return llvm::make_unique<FunctionAST>(std::move(Proto), std::move(E));
-        return nullptr;
+        getNextToken();
+        std::vector<std::unique_ptr<ExprAST>> expressions;
+        while(current_token.tokenid != '}') {
+            if(current_token.tokenid == tok_file_end) {
+                return nullptr;
+            }
+            if(auto E = ParseExpression())
+                expressions.push_back(std::move(E));
+            else
+                return nullptr;
+        }
+        return llvm::make_unique<FunctionAST>(std::move(proto), std::move(expressions));
     }
 
     std::unique_ptr<TypeDeclarationAST> InferValueTokenType() {
@@ -360,6 +410,7 @@ private:
         bool ptr = false;
         std::string type;
         while(1) {
+            cout << current_token.str << endl;
             if((current_token.tokenid == tok_keyword) || (isstruct(current_token.str))) {
                 if(current_token.str == "const") {
                     constant = true;
@@ -381,10 +432,12 @@ private:
     }
 
     std::unique_ptr<PrototypeAST> ParsePrototype() {
+         cout << current_token.str << endl;
         std::unique_ptr<TypeDeclarationAST> decl = ParseType();
         if(!decl)
             return nullptr;
         if(decl->getType().empty()) {
+            cout << decl->getType() << endl;
             return LogErrorP("no typename specified");
         }
         if(current_token.tokenid != tok_word)
@@ -393,7 +446,7 @@ private:
         std::string fn_name = current_token.str;
         getNextToken();
 
-        if(current_token.tokenid == '(')
+        if(current_token.tokenid != '(')
             return LogErrorP("Expected '(' in prototype");
 
         std::vector<std::unique_ptr<VariableExprAST>> ArgsPrototypes;
@@ -438,15 +491,8 @@ private:
 
 int process_file(string filename) {
     cout << "Loading: " << filename << endl;
-    Tokenizer t(filename);
-    while(true) {
-        Token token = t.getToken();
-        cout << token.str << endl;
-        cout << token.tokenid << endl;
-        if(token.tokenid == tok_file_end) {
-            break;
-        }
-    }
+    Parser t = Parser(Tokenizer(filename));
+    t.MainLoop();
     return 0;
 }
 
