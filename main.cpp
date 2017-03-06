@@ -267,21 +267,35 @@ private:
     }
 
     std::unique_ptr<ExprAST> ParseIdentifierExpr() {
-
-        if((current_token.tokenid == tok_keyword) || isstruct(current_token.str)) {
-            std::unique_ptr<TypeDeclarationAST> decl = ParseType();
-            second_pass = true;
-            return llvm::make_unique<VariableExprAST>(current_token.str, std::move(decl));
-        } else if(current_token.tokenid == tok_word) {
-            std::unique_ptr<TypeDeclarationAST> raincheck = llvm::make_unique<TypeDeclarationAST>("unknown",false, false, false);
+        string identifier = current_token.str;
+        if((current_token.tokenid == tok_keyword) || current_token.tokenid == tok_word) {
+            std::unique_ptr<TypeDeclarationAST> raincheck;
+            if((current_token.tokenid == tok_keyword) || isstruct(current_token.str)) {
+                raincheck = ParseType();
+            } else {
+                raincheck = llvm::make_unique<TypeDeclarationAST>("unknown",false, false, false);
+            }
             std::unique_ptr<VariableExprAST> LHS = llvm::make_unique<VariableExprAST>(current_token.str,std::move(raincheck));
             getNextToken();
-            string op = current_token.str;
-            getNextToken();
-            std::unique_ptr<VariableExprAST> RHS = llvm::make_unique<VariableExprAST>(current_token.str,std::move(raincheck));
+            if(current_token.tokenid == '(') {
+                goto call;
+            }
+            string op;
+            while(current_token.tokenid >= 0) {
+                if(current_token.tokenid == ';') {
+                    return LogError("The line ended a long time ago, and we are still going.");
+                }
+                op += current_token.tokenid;
+                getNextToken();
+            }
+            if(op.empty()) {
+                return LogError("I think you forgot an operator somewhere.");
+            }
+            std::unique_ptr<ExprAST> RHS;
+            RHS = ParsePrimary();
             return llvm::make_unique<BinaryExprAST>(op, std::move(LHS), std::move(RHS));
         }
-        std::string identifier = current_token.str;
+        call:
         getNextToken();
         std::vector<std::unique_ptr<ExprAST>> args;
         if(current_token.tokenid != ')') {
@@ -372,14 +386,20 @@ private:
         getNextToken();
         std::vector<std::unique_ptr<ExprAST>> expressions;
         while(current_token.tokenid != '}') {
+            cout << current_token.tokenid << endl;
             if(current_token.tokenid == tok_file_end) {
                 return nullptr;
+            }
+            if(current_token.tokenid == ';') {
+                getNextToken();
+                continue;
             }
             if(auto E = ParseExpression())
                 expressions.push_back(std::move(E));
             else
                 return nullptr;
         }
+        getNextToken();
         return llvm::make_unique<FunctionAST>(std::move(proto), std::move(expressions));
     }
 
@@ -450,14 +470,21 @@ private:
             return LogErrorP("Expected '(' in prototype");
 
         std::vector<std::unique_ptr<VariableExprAST>> ArgsPrototypes;
+        newarg:
         while((getNextToken().tokenid == tok_keyword) || isstruct(current_token.str)){
             std::unique_ptr<TypeDeclarationAST> arg_decl =  ParseType();
+            if(current_token.tokenid != tok_word)
+                return LogErrorP("Unexpected token in argument list");
             string name = current_token.str;
             ArgsPrototypes.push_back(llvm::make_unique<VariableExprAST>(name,std::move(arg_decl)));
         }
-
-        if(current_token.tokenid != ')')
+        if(current_token.tokenid == ',')
+            goto newarg;
+        else if(current_token.tokenid == ')')
+            goto finish;
+        else
             return LogErrorP("Expected ') in prototype");
+        finish:
         getNextToken();
         return llvm::make_unique<PrototypeAST>(fn_name, std::move(ArgsPrototypes), std::move(decl));
 
@@ -502,7 +529,7 @@ int main(int argc, char *argv[])
         printf("You need to specify a file.\n");
         exit(-1);
     }
-    process_file("test.unref");
+    process_file("/root/build-unref-Desktop-Debug/test.unref");
     return 0;
 }
 
