@@ -9,9 +9,9 @@
 #include <memory>
 #include <map>
 #include <llvm/ADT/STLExtras.h>
-
+#include <boost/spirit/include/lex_lexertl.hpp>
 using namespace std;
-
+namespace lex = boost::spirit::lex;
 class ReferenceManager {
 
 };
@@ -24,7 +24,8 @@ enum TokenNumber {
     tok_keyword = -2,
     tok_value = -3,
     tok_word = -4,
-    tok_struct = -5
+    tok_struct = -5,
+    tok_string = -6
 
 };
 
@@ -53,6 +54,7 @@ public:
 };
 
 
+
 class NumberExprAST : public ExprAST {
     void* val;
     std::unique_ptr<TypeDeclarationAST> decl;
@@ -63,10 +65,12 @@ public:
 class VariableExprAST : public ExprAST {
     std::string name;
     std::unique_ptr<TypeDeclarationAST> decl;
+    std::unique_ptr<ExprAST> arrayexpr;
+    bool array;
 public:
     VariableExprAST(const std::string &name,
-                    std::unique_ptr<TypeDeclarationAST> decl)
-        : name(name), decl(std::move(decl))  {}
+                    std::unique_ptr<TypeDeclarationAST> decl, std::unique_ptr<ExprAST> arrayexpr, bool array)
+        : name(name), decl(std::move(decl)), arrayexpr(std::move(arrayexpr)), array(array)  {}
 };
 
 class BinaryExprAST : public ExprAST {
@@ -158,6 +162,29 @@ public:
                 return token;
             }
             token.tokenid = tok_word;
+            return token;
+        }
+        if(lastchar == '\"') {
+            int lookback = lastchar;
+            token.tokenid = tok_string;
+            while(true) {
+                lastchar = f.get();
+                if(lookback == '\\'){
+                    if(lastchar == '\"') {
+                        token.str += lastchar;
+                        continue;
+                    }
+                }
+                if(lastchar == '\"') {
+                    lastchar = f.get();
+                    break;
+                }
+                if(lastchar == EOF) {
+                    token.tokenid = tok_file_end;
+                    return token;
+                }
+                lookback = lastchar;
+            }
             return token;
         }
         if(isdigit(lastchar) || lastchar == '.') {
@@ -275,7 +302,7 @@ private:
             } else {
                 raincheck = llvm::make_unique<TypeDeclarationAST>("unknown",false, false, false);
             }
-            std::unique_ptr<VariableExprAST> LHS = llvm::make_unique<VariableExprAST>(current_token.str,std::move(raincheck));
+            std::unique_ptr<VariableExprAST> LHS = llvm::make_unique<VariableExprAST>(current_token.str,std::move(raincheck),llvm::make_unique<NumberExprAST>(NumberExprAST((void*)new int(1),llvm::make_unique<TypeDeclarationAST>(TypeDeclarationAST("uint32",true,true,false)))),false);
             getNextToken();
             if(current_token.tokenid == '(') {
                 goto call;
@@ -319,10 +346,19 @@ private:
         return llvm::make_unique<CallExprAST>(identifier,std::move(args));
     }
 
+    std::unique_ptr<ExprAST> ParseString() {
+        std::unique_ptr<TypeDeclarationAST> decl = llvm::make_unique<TypeDeclarationAST>(TypeDeclarationAST("string", false, true, false));
+        auto result = llvm::make_unique<NumberExprAST>((void*)new string(current_token.str), std::move(decl));
+        getNextToken();
+        return result;
+    }
+
     std::unique_ptr<ExprAST> ParsePrimary() {
         switch(current_token.tokenid) {
         default:
             return LogError("unknown token when expected an expression");
+        case tok_string:
+            return ParseString();
         case tok_keyword:
             return ParseIdentifierExpr();
         case tok_word:
@@ -471,17 +507,31 @@ private:
 
         std::vector<std::unique_ptr<VariableExprAST>> ArgsPrototypes;
         newarg:
+        string name;
+        std::unique_ptr<TypeDeclarationAST> arg_decl;
         while((getNextToken().tokenid == tok_keyword) || isstruct(current_token.str)){
-            std::unique_ptr<TypeDeclarationAST> arg_decl =  ParseType();
+            arg_decl =  ParseType();
             if(current_token.tokenid != tok_word)
                 return LogErrorP("Unexpected token in argument list");
-            string name = current_token.str;
-            ArgsPrototypes.push_back(llvm::make_unique<VariableExprAST>(name,std::move(arg_decl)));
+            name = current_token.str;
         }
-        if(current_token.tokenid == ',')
+        reitr:
+        if(current_token.tokenid == '[') {
+            getNextToken();
+            std::unique_ptr<ExprAST> E = ParseExpression();
+            if(E.get() == nullptr) {
+                return LogErrorP("Failed to parse expression in array.");
+            }
+            ArgsPrototypes.push_back(llvm::make_unique<VariableExprAST>(name,std::move(arg_decl),std::move(E),true));
+            getNextToken();
+            goto reitr;
+        } else if(current_token.tokenid == ',') {
+            ArgsPrototypes.push_back(llvm::make_unique<VariableExprAST>(name,std::move(arg_decl),llvm::make_unique<NumberExprAST>(NumberExprAST((void*)new int(1),llvm::make_unique<TypeDeclarationAST>(TypeDeclarationAST("uint32",true,true,false)))),false));
             goto newarg;
-        else if(current_token.tokenid == ')')
+        } else if(current_token.tokenid == ')') {
+            ArgsPrototypes.push_back(llvm::make_unique<VariableExprAST>(name,std::move(arg_decl),llvm::make_unique<NumberExprAST>(NumberExprAST((void*)new int(1),llvm::make_unique<TypeDeclarationAST>(TypeDeclarationAST("uint32",true,true,false)))),false));
             goto finish;
+        }
         else
             return LogErrorP("Expected ') in prototype");
         finish:
